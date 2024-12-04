@@ -12,6 +12,8 @@ from tqdm import tqdm
 import fitz
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
+from urllib.parse import unquote
+import shutil
 
 def setup_logging():
     logging.basicConfig(
@@ -96,6 +98,37 @@ def process_pdfs_parallel(paths, img_directory):
         results = [future.result() for future in futures]
     return sum(results), len(paths)
 
+def rename_url_encoded_files(directory):
+    """检查并重命名包含URL编码的PDF文件"""
+    directory_path = Path(directory)
+    renamed_files = {}  # 用于存储原文件名和新文件名的映射
+    
+    for pdf_path in directory_path.glob('*.pdf'):
+        original_name = pdf_path.name
+        decoded_name = unquote(original_name)
+        
+        # 如果解码后的文件名与原文件名不同，说明包含URL编码
+        if decoded_name != original_name:
+            new_path = pdf_path.parent / decoded_name
+            try:
+                # 如果目标文件已存在，添加数字后缀
+                if new_path.exists():
+                    base, ext = os.path.splitext(decoded_name)
+                    counter = 1
+                    while new_path.exists():
+                        new_name = f"{base}_{counter}{ext}"
+                        new_path = pdf_path.parent / new_name
+                        counter += 1
+                
+                # 重命名文件
+                shutil.move(str(pdf_path), str(new_path))
+                renamed_files[str(pdf_path)] = str(new_path)
+                logging.info(f"重命名文件: {original_name} -> {new_path.name}")
+            except Exception as e:
+                logging.error(f"重命名文件失败 {original_name}: {str(e)}")
+    
+    return renamed_files
+
 if __name__ == "__main__":
     setup_logging()
     pdf_directory = './pdf'
@@ -104,6 +137,9 @@ if __name__ == "__main__":
     # 确保目录存在
     ensure_directory(pdf_directory)
     ensure_directory(img_directory)
+    
+    # 重命名包含URL编码的文件
+    renamed_files = rename_url_encoded_files(pdf_directory)
     
     # PDF 处理
     paths = get_file_path(pdf_directory)
@@ -126,11 +162,15 @@ if __name__ == "__main__":
     
     if df_list:
         df = pd.concat(df_list, ignore_index=True)
-        output_path = 'output.xlsx'
+        # Excel 输出
+        excel_path = 'output.xlsx'
+        # CSV 输出
+        csv_path = 'output.csv'
         try:
-            df.to_excel(output_path, index=False)
-            logging.info(f'Results successfully saved to {output_path}')
+            df.to_excel(excel_path, index=False)
+            df.to_csv(csv_path, index=False, encoding='utf-8')
+            logging.info(f'Results successfully saved to {excel_path} and {csv_path}')
         except Exception as e:
-            logging.error(f'Error saving results to Excel: {str(e)}')
+            logging.error(f'Error saving results: {str(e)}')
     else:
         logging.info("No data to save - all OCR processing failed")
