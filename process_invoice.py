@@ -33,6 +33,7 @@ class InvoiceProcessor:
             '税率': None
         }
         self.invoices = []
+        self.failed_files = []
         
     def extract_date(self, text):
         """提取日期"""
@@ -138,16 +139,36 @@ class InvoiceProcessor:
             if tax_rate:
                 self.current_invoice['税率'] = tax_rate
 
+    def finalize_invoice(self):
+        """完成当前发票的处理并进行验证"""
+        if self.current_invoice['路径'] is not None:
+            # 检查关键字段是否都已成功提取
+            if (self.current_invoice['发票号'] is not None and 
+                self.current_invoice['总金额'] is not None and 
+                self.validate_amount(self.current_invoice['总金额'])):
+                # 打印成功处理的发票信息
+                logging.info(f"成功处理发票 - 发票号: {self.current_invoice['发票号']}, "
+                           f"金额: {self.current_invoice['总金额']:.2f}")
+            else:
+                # 记录处理失败的文件
+                failed_file = self.current_invoice['路径']
+                if failed_file not in self.failed_files:
+                    self.failed_files.append(failed_file)
+                logging.warning(f"发票处理失败 - 文件: {failed_file}")
+
     def process_csv(self, csv_path):
         """处理CSV文件"""
         df = pd.read_csv(csv_path)
         
+        current_source = None
         for _, row in df.iterrows():
+            if current_source != row['source']:
+                self.finalize_invoice()  # 处理完一个发票后进行验证
+                current_source = row['source']
             self.process_line(row['text'], row['source'])
         
-        # 添加最后一个发票
-        if self.current_invoice['路径'] is not None:
-            self.invoices.append(self.current_invoice.copy())
+        # 处理最后一个发票
+        self.finalize_invoice()
 
         # 创建结果DataFrame
         result_df = pd.DataFrame(self.invoices)
@@ -160,13 +181,6 @@ class InvoiceProcessor:
         # 金额应该大于0且小于一个合理的最大值（比如100万）
         return 0 < amount < 1000000
 
-    def finalize_invoice(self):
-        """完成当前发票的处理并进行验证"""
-        if self.current_invoice['总金额'] is not None:
-            if not self.validate_amount(self.current_invoice['总金额']):
-                logging.warning(f"Invalid amount detected in {self.current_invoice['路径']}: {self.current_invoice['总金额']}")
-                self.current_invoice['总金额'] = None
-
 def main():
     setup_logging()
     logging.info("开始处理发票数据...")
@@ -176,13 +190,27 @@ def main():
         result_df = processor.process_csv('output.csv')
         output_file = 'processed_invoices.xlsx'
         result_df.to_excel(output_file, index=False)
-        logging.info(f"处理完成，结果已保存到 {output_file}")
         
         # 打印统计信息
         total_invoices = len(result_df)
-        valid_invoices = len(result_df.dropna(subset=['发票号']))
+        valid_invoices = len(result_df.dropna(subset=['发票号', '总金额']))
         logging.info(f"总共处理了 {total_invoices} 张发票，其中 {valid_invoices} 张有效发票")
         
+        # 打印失败文件列表
+        if processor.failed_files:
+            logging.warning("以下文件处理失败：")
+            for failed_file in processor.failed_files:
+                logging.warning(f"- {failed_file}")
+            
+            # 将失败文件列表保存到文件
+            failed_files_path = 'failed_invoices.txt'
+            with open(failed_files_path, 'w', encoding='utf-8') as f:
+                for file in processor.failed_files:
+                    f.write(f"{file}\n")
+            logging.info(f"失败文件列表已保存到: {failed_files_path}")
+        else:
+            logging.info("所有文件处理成功！")
+            
     except Exception as e:
         logging.error(f"处理过程中出现错误: {str(e)}")
 

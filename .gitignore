@@ -45,3 +45,4 @@ img/
 # OS specific
 .DS_Store
 Thumbs.db 
+failed_invoices.txt
