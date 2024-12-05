@@ -32,10 +32,21 @@ def get_file_path(directory):
     paths = list(directory_path.glob('*.pdf'))
     return [str(path) for path in paths if path.is_file()]
 
-def ensure_directory(directory):
-    """确保目录存在，如果不存在则创建"""
+def ensure_directory(directory, clear_contents=False):
+    """确保目录存在，如果不存在则创建。可选择是否清空目录内容"""
     if not os.path.exists(directory):
         os.makedirs(directory)
+    elif clear_contents:
+        # 只有当 clear_contents 为 True 时才清空目录
+        for file in os.listdir(directory):
+            file_path = os.path.join(directory, file)
+            try:
+                if os.path.isfile(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                logging.error(f'Error deleting {file_path}: {str(e)}')
 
 def process_pdfs(paths, img_directory):
     successful_conversions = 0
@@ -101,7 +112,7 @@ def process_pdfs_parallel(paths, img_directory):
 def rename_url_encoded_files(directory):
     """检查并重命名包含URL编码的PDF文件"""
     directory_path = Path(directory)
-    renamed_files = {}  # 用于存储原文件名和新文件名的映射
+    renamed_files = {}  # 用于存储原文件名和���文件名的映射
     
     for pdf_path in directory_path.glob('*.pdf'):
         original_name = pdf_path.name
@@ -134,9 +145,9 @@ if __name__ == "__main__":
     pdf_directory = './pdf'
     img_directory = './img'
     
-    # 确保目录存在
-    ensure_directory(pdf_directory)
-    ensure_directory(img_directory)
+    # pdf 目录不清空，img 目录需要清空
+    ensure_directory(pdf_directory, clear_contents=False)
+    ensure_directory(img_directory, clear_contents=True)
     
     # 重命名包含URL编码的文件
     renamed_files = rename_url_encoded_files(pdf_directory)
