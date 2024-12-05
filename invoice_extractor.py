@@ -3,6 +3,7 @@
 import re
 import logging
 from datetime import datetime
+from pathlib import Path
 
 class InvoiceExtractor:
     def __init__(self):
@@ -20,8 +21,8 @@ class InvoiceExtractor:
             '销售金额': None,
             '税率': None
         }
-        self.invoices = []
-        self.failed_files = []
+        self._cached_tax_rate = None
+        self._cached_amounts = None
         self.retry_patterns = {
             '发票号码': [
                 r'发票号码:?\s*(\d+)',
@@ -50,8 +51,6 @@ class InvoiceExtractor:
                 r'税率.*?(\d+)%'
             ]
         }
-        self._cached_tax_rate = None
-        self._cached_amounts = None
 
     def retry_extract(self, text_lines, field):
         """使用多个模式尝试提取字段值"""
@@ -68,7 +67,7 @@ class InvoiceExtractor:
                             return invoice_number
             return None
 
-        # 首先确定税率（使用缓存）
+        # ��先确定税率（使用缓存）
         if self._cached_tax_rate is None:
             for line in text_lines:
                 tax_match = re.search(r'(\d+)%', line)
@@ -79,7 +78,7 @@ class InvoiceExtractor:
                         logging.info(f"找到有效税率: {rate}%")
                         break
 
-        # 如果是在找税率，直接返回缓存的税率
+        # 如果是在找税率，直接返回缓存税率
         if field == '税率':
             return self._cached_tax_rate
 
@@ -122,14 +121,14 @@ class InvoiceExtractor:
 
         return None
 
-    def second_pass_process(self, failed_file, text_lines):
-        """对失败的文件进行二次处理"""
-        logging.info(f"开始二次处理文件: {failed_file}")
+    def second_pass_process(self, file_path, text_lines):
+        """二次处理失败的发票文件"""
+        logging.info(f"开始二次处理文件: {Path(file_path).name}")
         
         try:
             # 重置当前发票信息
             self.current_invoice = {key: None for key in self.current_invoice}
-            self.current_invoice['路径'] = failed_file
+            self.current_invoice['路径'] = file_path
             
             # 尝试提取各个字段
             fields_to_retry = ['发票号码', '总金额', '日期', '购买方', '销售方', '税率']
@@ -158,13 +157,18 @@ class InvoiceExtractor:
                 self.validate_amount(self.current_invoice['总金额'])):
                 logging.info(f"二次处理成功 - 发票号: {self.current_invoice['发票号']}, "
                            f"金额: {self.current_invoice['总金额']:.2f}")
-                self.invoices.append(self.current_invoice.copy())
-                return True
-            return False
+                return {
+                    '发票号': self.current_invoice['发票号'],
+                    '总金额': self.current_invoice['总金额'],
+                    '税率': self.current_invoice['税率'],
+                    '销售金额': self.current_invoice['销售金额'],
+                    # 其他需要的字段...
+                }
+            return None  # 处理失败时返回 None
             
         except Exception as e:
-            logging.error(f"二次处理文件 {failed_file} 时出错: {str(e)}")
-            return False
+            logging.error(f"二次处理文件 {file_path} 时出错: {str(e)}")
+            return None
 
     def extract_date(self, text):
         """提取日期"""
@@ -201,8 +205,6 @@ class InvoiceExtractor:
     def process_line(self, text, source):
         """处理每一行文本"""
         if self.current_invoice['路径'] != source:
-            if self.current_invoice['路径'] is not None:
-                self.invoices.append(self.current_invoice.copy())
             self.current_invoice = {key: None for key in self.current_invoice}
             self.current_invoice['路径'] = source
 
@@ -278,10 +280,7 @@ class InvoiceExtractor:
                            f"金额: {self.current_invoice['总金额']:.2f}, "
                            f"文件: {self.current_invoice['路径']}")
             else:
-                failed_file = self.current_invoice['路径']
-                if failed_file not in self.failed_files:
-                    self.failed_files.append(failed_file)
-                logging.warning(f"发票处理失败 - 文件: {failed_file}")
+                logging.warning(f"发票处理失败 - 文件: {self.current_invoice['路径']}")
 
     def validate_amount(self, amount):
         """验证金额是否合理"""
