@@ -108,52 +108,93 @@ class AIInvoiceExtractor:
     def extract_invoice_info(self, text_content: str) -> Optional[Dict]:
         """使用OpenAI API从文本中提取发票信息"""
         try:
-            # 构建 prompt
-            prompt = r"""请从以下文本中提取发票信息，并以JSON格式返回。
-需要提取的字段包括：发票号码、开票日期、购买方名称、购买方纳税人识别号、
-销售方名称、销售方纳税人识别号、金额、税率、税额、价税合计。
-如果某个字段未找到，将其值设为null。
+            # 构建 prompt 和 response format
+            prompt = """请从以下文本中提取发票信息。
 
 文本内容：
 {}
 
-请以下面的格式返回（仅返回JSON，不要其他说明）：
-{{
-    "发票号码": null,
-    "开票日期": null,
-    "购买方名称": null,
-    "购买方纳税人识别号": null,
-    "销售方名称": null,
-    "销售方纳税人识别号": null,
-    "金额": null,
-    "税率": null,
-    "税额": null,
-    "价税合计": null
-}}""".format(text_content)
+请提取以上文本中的发票信息。""".format(text_content)
 
-            # 调用OpenAI API
+            # 调用OpenAI API，使用JSON mode
             client = OpenAI(api_key=self.openai_api_key)
             response = client.chat.completions.create(
                 model="gpt-4-turbo-preview",
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{
+                    "role": "system",
+                    "content": "你是一个专业的发票信息提取助手。你需要从文本中提取发票信息，并以JSON格式返回。"
+                }, {
+                    "role": "user",
+                    "content": prompt
+                }],
+                response_format={"type": "json_object"},  # 强制JSON输出
+                functions=[{
+                    "name": "extract_invoice_info",
+                    "description": "从文本中提取发票信息",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "发票号码": {
+                                "type": "string",
+                                "description": "发票号码"
+                            },
+                            "开票日期": {
+                                "type": "string",
+                                "description": "开票日期，格式：YYYY-MM-DD"
+                            },
+                            "购买方名称": {
+                                "type": "string",
+                                "description": "购买方名称"
+                            },
+                            "购买方纳税人识别号": {
+                                "type": "string",
+                                "description": "购买方的纳税人识别号"
+                            },
+                            "销售方名称": {
+                                "type": "string",
+                                "description": "销售方名称"
+                            },
+                            "销售方纳税人识别号": {
+                                "type": "string",
+                                "description": "销售方的纳税人识别号"
+                            },
+                            "金额": {
+                                "type": "number",
+                                "description": "不含税金额"
+                            },
+                            "税率": {
+                                "type": "number",
+                                "description": "税率，例如0.13表示13%"
+                            },
+                            "税额": {
+                                "type": "number",
+                                "description": "税额"
+                            },
+                            "价税合计": {
+                                "type": "number",
+                                "description": "含税总金额"
+                            }
+                        },
+                        "required": ["发票号码", "开票日期", "购买方名称", "销售方名称", "价税合计"]
+                    }
+                }],
+                function_call={"name": "extract_invoice_info"},  # 强制调用函数
                 temperature=0.1
             )
             
-            # 获取原始返回内容
-            raw_content = response.choices[0].message.content
-            
-            # 清理返回内容中的代码块标记
-            cleaned_content = raw_content.replace('```json\n', '').replace('\n```', '').strip()
-            
-            logging.info(f"OpenAI返回内容:\n{cleaned_content}")
+            # 获取返回内容
+            function_args = response.choices[0].message.function_call.arguments
+            logging.info(f"OpenAI返回内容:\n{function_args}")
             
             try:
-                result = json.loads(cleaned_content)
+                result = json.loads(function_args)
+                # 将None字符串转换为None
+                result = {k: None if v == "null" or v == "" else v 
+                         for k, v in result.items()}
                 return result
             except json.JSONDecodeError as e:
                 logging.error("OpenAI返回内容解析失败")
-                logging.error(f"原始返回内容:\n{raw_content}")
-                logging.error(f"清理后内容:\n{cleaned_content}")
+                logging.error(f"原始返回内容:\n{function_args}")
                 logging.error(f"JSON解析错误: {str(e)}")
                 return None
             
@@ -161,7 +202,7 @@ class AIInvoiceExtractor:
             logging.error(f"发票信息提取失败: {str(e)}")
             if 'response' in locals():
                 try:
-                    logging.error(f"OpenAI原始返回内容:\n{response.choices[0].message.content}")
+                    logging.error(f"OpenAI原始返回内容:\n{response.choices[0].message.function_call.arguments}")
                 except:
                     pass
             return None
