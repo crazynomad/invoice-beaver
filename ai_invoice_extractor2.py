@@ -45,7 +45,7 @@ class AIInvoiceExtractor:
         blocks_dir.mkdir(exist_ok=True)
         logging.info("已清空blocks目录")
 
-    def pdf_to_blocks(self, pdf_path: Union[str, Path]) -> Optional[str]:
+    def pdf_to_blocks(self, pdf_path: Union[str, Path]) -> Optional[tuple[str, List[Dict]]]:
         """
         将PDF转换为文本块并保存
         
@@ -53,7 +53,7 @@ class AIInvoiceExtractor:
             pdf_path: PDF文件路径
             
         Returns:
-            转换后的文本内容，如果失败则返回None
+            (文本内容, 文本块信息列表)的元组，如果失败则返回None
         """
         try:
             pdf_path = Path(pdf_path)
@@ -99,22 +99,43 @@ class AIInvoiceExtractor:
             text_file.write_text(text_content, encoding='utf-8')
             
             logging.info(f"文本块已保存到: {blocks_dir}")
-            return text_content
+            return text_content, all_blocks
             
         except Exception as e:
             logging.error(f"PDF转换失败: {str(e)}")
             return None
 
-    def extract_invoice_info(self, text_content: str) -> Optional[Dict]:
-        """使用OpenAI API从文本中提取发票信息"""
+    def extract_invoice_info(self, text_content: str, blocks_info: Optional[List[Dict]] = None) -> Optional[Dict]:
+        """
+        使用OpenAI API从文本中提取发票信息
+        
+        Args:
+            text_content: 原始文本内容
+            blocks_info: 文本块信息列表，包含位置和内容
+        """
         try:
             # 构建 prompt 和 response format
-            prompt = """请从以下文本中提取发票信息。
+            if blocks_info:
+                # 如果有JSON结构信息，只使用JSON
+                prompt = """请从以下JSON结构化信息中提取发票信息。
+这是一个包含文本块位置信息的JSON数组，每个文本块包含：
+- text: 文本内容
+- bbox: 文本块的坐标 [x0, y0, x1, y1]
+- block_no: 块编号
+- page: 页码
+
+JSON结构：
+{}
+
+请提取发票信息。""".format(json.dumps(blocks_info, ensure_ascii=False, indent=2))
+            else:
+                # 如果没有JSON，使用纯文本
+                prompt = """请从以下文本中提取发票信息。
 
 文本内容：
 {}
 
-请提取以上文本中的发票信息。""".format(text_content)
+请提取发票信息。""".format(text_content)
 
             # 调用OpenAI API，使用JSON mode
             client = OpenAI(api_key=self.openai_api_key)
@@ -122,7 +143,10 @@ class AIInvoiceExtractor:
                 model="gpt-4-turbo-preview",
                 messages=[{
                     "role": "system",
-                    "content": "你是一个专业的发票信息提取助手。你需要从文本中提取发票信息，并以JSON格式返回。"
+                    "content": """你是一个专业的发票信息提取助手。你需要从提供的信息中提取发票信息，并以JSON格式返回。
+如果提供了JSON结构，请特别注意文本块的位置信息(bbox)，这可以帮助你更准确地识别发票上的各个字段。
+bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
+通常，发票的重要信息（如发票号码、金额等）会在特定位置出现。"""
                 }, {
                     "role": "user",
                     "content": prompt
@@ -175,10 +199,10 @@ class AIInvoiceExtractor:
                                 "description": "含税总金额"
                             }
                         },
-                        "required": ["发票号码", "开票日期", "购买方名称", "销售方名称", "价税合计"]
+                        "required": ["���票号码", "开票日期", "购买方名称", "销售方名称", "价税合计"]
                     }
                 }],
-                function_call={"name": "extract_invoice_info"},  # 强制调用函数
+                function_call={"name": "extract_invoice_info"},
                 temperature=0.1
             )
             
@@ -219,13 +243,13 @@ class AIInvoiceExtractor:
             logging.info(f"正在处理: {pdf_file.name}")
             
             # 转换为文本块
-            text_content = self.pdf_to_blocks(pdf_file)
+            text_content, blocks_info = self.pdf_to_blocks(pdf_file)
             if not text_content:
                 logging.error(f"无法处理文件: {pdf_file.name}")
                 continue
                 
             # 提取信息
-            invoice_info = self.extract_invoice_info(text_content)
+            invoice_info = self.extract_invoice_info(text_content, blocks_info)
             if invoice_info:
                 invoice_info["文件名"] = pdf_file.name
                 results.append(invoice_info)
@@ -241,19 +265,19 @@ class AIInvoiceExtractor:
         else:
             logging.warning("没有成功提取结果")
 
-    def process_single_pdf(self, 
-                         pdf_path: Union[str, Path]) -> Optional[Dict]:
+    def process_single_pdf(self, pdf_path: Union[str, Path]) -> Optional[Dict]:
         """处理单个PDF文件"""
         pdf_path = Path(pdf_path)
         
         # 转换为文本块
-        text_content = self.pdf_to_blocks(pdf_path)
-        if not text_content:
+        result = self.pdf_to_blocks(pdf_path)
+        if not result:
             logging.error(f"无法处理文件: {pdf_path.name}")
             return None
             
+        text_content, blocks_info = result
         # 提取信息
-        invoice_info = self.extract_invoice_info(text_content)
+        invoice_info = self.extract_invoice_info(text_content, blocks_info)
         if invoice_info:
             invoice_info["文件名"] = pdf_path.name
             logging.info(f"成功提取信息: {pdf_path.name}")
@@ -275,14 +299,14 @@ def main():
     
     subparsers = parser.add_subparsers(dest='command', help='可用命令')
     
-    # 单文件处理命令
+    # 单文件处��命令
     single_parser = subparsers.add_parser('single', help='处理单个PDF文件')
     single_parser.add_argument('--pdf', '-p', 
                              dest='pdf_path',
                              required=True,
                              help='PDF文件路径')
     single_parser.add_argument('--output', '-o', 
-                             help='输出JSON文件路径（可选）')
+                             help='输出JSON文件径（可选）')
     
     # 批量处理命令
     batch_parser = subparsers.add_parser('batch', help='批量处理PDF文件')
