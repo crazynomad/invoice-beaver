@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Union
 from openai import OpenAI
 import fitz
 import shutil
+import urllib.parse
 
 class AIInvoiceExtractor:
     """使用 AI 进行发票信息提取的类"""
@@ -47,7 +48,7 @@ class AIInvoiceExtractor:
 
     def pdf_to_blocks(self, pdf_path: Union[str, Path]) -> Optional[tuple[str, List[Dict]]]:
         """
-        将PDF转换为文本块并保存
+        将PDF转换为文本块保存
         
         Args:
             pdf_path: PDF文件路径
@@ -146,7 +147,7 @@ JSON结构：
                     "content": """你是一个专业的发票信息提取助手。你需要从提供的信息中提取发票信息，并以JSON格式返回。
 如果提供了JSON结构，请特别注意文本块的位置信息(bbox)，这可以帮助你更准确地识别发票上的各个字段。
 bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
-通常，发票的重要信息（如发票号码、金额等）会在特定位置出现。"""
+通常，发票的重要信息（如发票号码、金额等）会在特定位出现。"""
                 }, {
                     "role": "user",
                     "content": prompt
@@ -199,7 +200,7 @@ bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
                                 "description": "含税总金额"
                             }
                         },
-                        "required": ["���票号码", "开票日期", "购买方名称", "销售方名称", "价税合计"]
+                        "required": ["发票号码", "开票���期", "购买方名称", "销售方名称", "价税合计"]
                     }
                 }],
                 function_call={"name": "extract_invoice_info"},
@@ -240,14 +241,17 @@ bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
         
         # 处理所有PDF文件
         for pdf_file in input_dir.glob("*.pdf"):
+            # 处理文件名
+            pdf_file = self.normalize_filename(pdf_file)
             logging.info(f"正在处理: {pdf_file.name}")
             
             # 转换为文本块
-            text_content, blocks_info = self.pdf_to_blocks(pdf_file)
-            if not text_content:
+            result = self.pdf_to_blocks(pdf_file)
+            if not result:
                 logging.error(f"无法处理文件: {pdf_file.name}")
                 continue
                 
+            text_content, blocks_info = result
             # 提取信息
             invoice_info = self.extract_invoice_info(text_content, blocks_info)
             if invoice_info:
@@ -267,7 +271,8 @@ bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
 
     def process_single_pdf(self, pdf_path: Union[str, Path]) -> Optional[Dict]:
         """处理单个PDF文件"""
-        pdf_path = Path(pdf_path)
+        # 处理文件名
+        pdf_path = self.normalize_filename(pdf_path)
         
         # 转换为文本块
         result = self.pdf_to_blocks(pdf_path)
@@ -286,6 +291,31 @@ bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
             logging.error(f"信息提取失败: {pdf_path.name}")
             return None
 
+    def normalize_filename(self, file_path: Union[str, Path]) -> Path:
+        """
+        处理文件名，解码URL编码的文件名
+        
+        Args:
+            file_path: 原始文件路径
+            
+        Returns:
+            处理后的Path对象
+        """
+        file_path = Path(file_path)
+        decoded_name = urllib.parse.unquote(file_path.name)
+        
+        if decoded_name != file_path.name:
+            # 如果文件名需要解码
+            new_path = file_path.parent / decoded_name
+            try:
+                file_path.rename(new_path)
+                logging.info(f"文件重命名: {file_path.name} -> {decoded_name}")
+                return new_path
+            except Exception as e:
+                logging.error(f"文件重命名失败: {str(e)}")
+                return file_path
+        return file_path
+
 def main():
     """命令行入口函数"""
     import argparse
@@ -299,7 +329,7 @@ def main():
     
     subparsers = parser.add_subparsers(dest='command', help='可用命令')
     
-    # 单文件处��命令
+    # 单文件处命令
     single_parser = subparsers.add_parser('single', help='处理单个PDF文件')
     single_parser.add_argument('--pdf', '-p', 
                              dest='pdf_path',
