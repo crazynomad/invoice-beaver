@@ -7,13 +7,28 @@ from openai import OpenAI
 import fitz
 import shutil
 import urllib.parse
+from tiktoken import encoding_for_model
+import time
+from openai import RateLimitError
 
 class AIInvoiceExtractor:
     """使用 AI 进行发票信息提取的类"""
     
-    def __init__(self, openai_api_key: str):
-        """初始化处理器并清理blocks目录"""
+    def __init__(self, openai_api_key: str, batch_size: int = 5, max_tokens_per_batch: int = 25000):
+        """初始化处理器并清理blocks目录
+        
+        Args:
+            openai_api_key: OpenAI API密钥
+            batch_size: 每批处理的文件数量，默认为5
+            max_tokens_per_batch: 每批次最大令牌数，默认25000（留有余量）
+        """
         self.openai_api_key = openai_api_key
+        self.batch_size = batch_size
+        self.max_tokens_per_batch = max_tokens_per_batch
+        self.encoder = encoding_for_model("gpt-4")
+        self.sleep_time = 5  # Default sleep time between requests
+        self.max_retries = 3  # Maximum number of retries
+        self.retry_delay = 30  # Delay in seconds before retry on 429 error
         
         # 设置日志
         logging.basicConfig(
@@ -106,9 +121,26 @@ class AIInvoiceExtractor:
             logging.error(f"PDF转换失败: {str(e)}")
             return None
 
+    def _make_openai_request(self, client, **kwargs):
+        """Helper method to make OpenAI API requests with retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                response = client.chat.completions.create(**kwargs)
+                time.sleep(self.sleep_time)  # Sleep after successful request
+                return response
+            except RateLimitError as e:
+                if attempt < self.max_retries - 1:
+                    logging.warning(f"Rate limit exceeded. Retrying in {self.retry_delay} seconds...")
+                    time.sleep(self.retry_delay)
+                else:
+                    raise e
+            except Exception as e:
+                logging.error(f"OpenAI API request failed: {str(e)}")
+                raise e
+
     def extract_invoice_info(self, text_content: str, blocks_info: Optional[List[Dict]] = None) -> Optional[Dict]:
         """
-        使用OpenAI API从文本中提取发票信息
+        使用OpenAI API文本中提取发票信息
         
         Args:
             text_content: 原始文本内容
@@ -133,14 +165,15 @@ JSON结构：
                 # 如果没有JSON，使用纯文本
                 prompt = """请从以下文本中提取发票信息。
 
-文本内容：
+文本内：
 {}
 
 请提取发票信息。""".format(text_content)
 
             # 调用OpenAI API，使用JSON mode
             client = OpenAI(api_key=self.openai_api_key)
-            response = client.chat.completions.create(
+            response = self._make_openai_request(
+                client,
                 model="gpt-4-turbo-preview",
                 messages=[{
                     "role": "system",
@@ -200,7 +233,7 @@ bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
                                 "description": "含税总金额"
                             }
                         },
-                        "required": ["发票号码", "开票���期", "购买方名称", "销售方名称", "价税合计"]
+                        "required": ["发票号码", "开票日期", "购买方名称", "销售方名称", "价税合计"]
                     }
                 }],
                 function_call={"name": "extract_invoice_info"},
@@ -232,38 +265,232 @@ bbox格式为[x0, y0, x1, y1]，表示文本块的左上角和右下角坐标。
                     pass
             return None
 
-    def process_pdfs(self, 
-                    input_dir: Union[str, Path], 
-                    output_excel: Union[str, Path]) -> None:
-        """处理目录下的所有PDF文件并将结果保存到Excel"""
-        input_dir = Path(input_dir)
+    def batch_extract_invoice_info(self, text_contents: List[str], blocks_info_list: Optional[List[List[Dict]]] = None) -> List[Optional[Dict]]:
+        """
+        批量处理多个发票信息
+        
+        Args:
+            text_contents: 原始文本内容列表
+            blocks_info_list: 文本块信息列表的列表，每个元素对应一个文档的blocks信息
+        
+        Returns:
+            包含发票信息的字典列表，与输入顺序一致
+        """
+        try:
+            if blocks_info_list and len(text_contents) != len(blocks_info_list):
+                logging.error("文本内容数量与blocks信息数量不匹配")
+                return [None] * len(text_contents)
+            
+            # 构建批量处理的prompt
+            prompts = []
+            for i, text_content in enumerate(text_contents):
+                if blocks_info_list:
+                    # 使用JSON结构��息
+                    prompt = {
+                        "doc_id": i,
+                        "content_type": "json",
+                        "content": blocks_info_list[i]
+                    }
+                else:
+                    # 使用纯文本
+                    prompt = {
+                        "doc_id": i,
+                        "content_type": "text",
+                        "content": text_content
+                    }
+                prompts.append(prompt)
+
+            # 调用OpenAI API
+            client = OpenAI(api_key=self.openai_api_key)
+            response = self._make_openai_request(
+                client,
+                model="gpt-4-turbo-preview",
+                messages=[{
+                    "role": "system",
+                    "content": """你是一个专业的发票信息提取助手。你需要从提供的信息中批量提取发票信息。
+每个文档都有一个doc_id，你需要按顺序处理每个文档并返回结果数组。
+如果提供的是JSON结构(content_type="json")，请特别注意文本块的位置信息(bbox)。
+如果提供的是纯文本(content_type="text")，直接从文本中提取信息。
+请确返回的数组顺序与输入文档的顺序一致"""
+                }, {
+                    "role": "user",
+                    "content": f"请处理以下{len(prompts)}个文档：\n" + json.dumps(prompts, ensure_ascii=False, indent=2)
+                }],
+                response_format={"type": "json_object"},
+                functions=[{
+                    "name": "extract_invoice_info_batch",
+                    "description": "批量提取发票信息",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "results": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "doc_id": {"type": "integer"},
+                                        "data": {
+                                            "type": "object",
+                                            "properties": {
+                                                "发票号码": {"type": "string"},
+                                                "开票日期": {"type": "string"},
+                                                "购买方名称": {"type": "string"},
+                                                "购买方纳税人识别号": {"type": "string"},
+                                                "销售方名称": {"type": "string"},
+                                                "销售方纳税人识别号": {"type": "string"},
+                                                "金额": {"type": "number"},
+                                                "税率": {"type": "number"},
+                                                "税额": {"type": "number"},
+                                                "价税合计": {"type": "number"}
+                                            },
+                                            "required": ["发票号码", "开票日期", "购买方名称", "销售方名称", "价税合计"]
+                                        }
+                                    },
+                                    "required": ["doc_id", "data"]
+                                }
+                            }
+                        },
+                        "required": ["results"]
+                    }
+                }],
+                function_call={"name": "extract_invoice_info_batch"},
+                temperature=0.1
+            )
+            
+            # 解析返回结果
+            function_args = response.choices[0].message.function_call.arguments
+            logging.info(f"OpenAI返回内容:\n{function_args}")
+            
+            try:
+                result_obj = json.loads(function_args)
+                results = result_obj.get("results", [])
+                
+                # 确保结果顺序和数量正确
+                ordered_results = [None] * len(text_contents)
+                for result in results:
+                    doc_id = result.get("doc_id")
+                    if doc_id is not None and 0 <= doc_id < len(text_contents):
+                        data = result.get("data")
+                        # 将None字符串转换为None
+                        if data:
+                            data = {k: None if v == "null" or v == "" else v 
+                                   for k, v in data.items()}
+                        ordered_results[doc_id] = data
+                        
+                return ordered_results
+                
+            except json.JSONDecodeError as e:
+                logging.error("OpenAI返回内容解析失败")
+                logging.error(f"原始返回内容:\n{function_args}")
+                logging.error(f"JSON解析错误: {str(e)}")
+                return [None] * len(text_contents)
+                
+        except Exception as e:
+            logging.error(f"批量发票信息提取失败: {str(e)}")
+            return [None] * len(text_contents)
+
+    def count_tokens(self, text: str) -> int:
+        """计算文本的令牌数"""
+        return len(self.encoder.encode(text))
+
+    def _process_batch(self, pdf_files: List[Path], text_contents: List[str], blocks_info_list: List[List[Dict]]) -> List[Dict]:
+        """处理一个批次的文件"""
+        logging.info(f"开始处理批次，包含 {len(pdf_files)} 个文件")
         results = []
         
-        # 处理所有PDF文件
+        # 计算总令牌数并根据需要拆分批次
+        current_batch_files = []
+        current_batch_texts = []
+        current_batch_blocks = []
+        current_tokens = 0
+        
+        for i, (pdf_file, text_content, blocks_info) in enumerate(zip(pdf_files, text_contents, blocks_info_list)):
+            # 计算当前文档的令牌数
+            doc_tokens = self.count_tokens(text_content)
+            if blocks_info:
+                doc_tokens += self.count_tokens(json.dumps(blocks_info, ensure_ascii=False))
+            
+            # 如果单个文档就超过限制，记录错误并跳过
+            if doc_tokens > self.max_tokens_per_batch:
+                logging.error(f"文件过大，跳过处理: {pdf_file.name} (tokens: {doc_tokens})")
+                results.append(None)
+                continue
+            
+            # 如果添加当前文档会超过批次限制，先处理当前批次
+            if current_tokens + doc_tokens > self.max_tokens_per_batch:
+                batch_results = self.batch_extract_invoice_info(current_batch_texts, current_batch_blocks)
+                for pdf, result in zip(current_batch_files, batch_results):
+                    if result:
+                        result["文件名"] = pdf.name
+                        results.append(result)
+                    else:
+                        results.append(None)
+                        logging.error(f"信息提取失败: {pdf.name}")
+                
+                # 清空当前批次
+                current_batch_files = []
+                current_batch_texts = []
+                current_batch_blocks = []
+                current_tokens = 0
+            
+            # 添加到当前批次
+            current_batch_files.append(pdf_file)
+            current_batch_texts.append(text_content)
+            current_batch_blocks.append(blocks_info)
+            current_tokens += doc_tokens
+        
+        # 处理最后一个批次
+        if current_batch_files:
+            batch_results = self.batch_extract_invoice_info(current_batch_texts, current_batch_blocks)
+            for pdf, result in zip(current_batch_files, batch_results):
+                if result:
+                    result["文件名"] = pdf.name
+                    results.append(result)
+                else:
+                    results.append(None)
+                    logging.error(f"信息提取失败: {pdf.name}")
+        
+        return results
+
+    def process_pdfs(self, input_dir: Union[str, Path], output_excel: Union[str, Path]) -> None:
+        """处理目录下的所有PDF文件并将结果保存到Excel"""
+        input_dir = Path(input_dir)
+        pdf_files = []
+        text_contents = []
+        blocks_info_list = []
+        final_results = []
+        current_batch_tokens = 0
+        
+        # 收集所有PDF文件的信息
         for pdf_file in input_dir.glob("*.pdf"):
-            # 处理文件名
             pdf_file = self.normalize_filename(pdf_file)
             logging.info(f"正在处理: {pdf_file.name}")
             
-            # 转换为文本块
             result = self.pdf_to_blocks(pdf_file)
-            if not result:
-                logging.error(f"无法处理文件: {pdf_file.name}")
-                continue
+            if result:
+                text_content, blocks_info = result
+                pdf_files.append(pdf_file)
+                text_contents.append(text_content)
+                blocks_info_list.append(blocks_info)
                 
-            text_content, blocks_info = result
-            # 提取信息
-            invoice_info = self.extract_invoice_info(text_content, blocks_info)
-            if invoice_info:
-                invoice_info["文件名"] = pdf_file.name
-                results.append(invoice_info)
-                logging.info(f"成功提取信息: {pdf_file.name}")
+                # 当达到批次大小或令牌制时处理当前批次
+                if len(pdf_files) >= self.batch_size:
+                    batch_results = self._process_batch(pdf_files, text_contents, blocks_info_list)
+                    final_results.extend([r for r in batch_results if r is not None])
+                    pdf_files = []
+                    text_contents = []
+                    blocks_info_list = []
             else:
-                logging.error(f"信息提取失败: {pdf_file.name}")
+                logging.error(f"无法处理文件: {pdf_file.name}")
+        
+        # 处理剩余的文件
+        if pdf_files:
+            batch_results = self._process_batch(pdf_files, text_contents, blocks_info_list)
+            final_results.extend([r for r in batch_results if r is not None])
         
         # 保存到Excel
-        if results:
-            df = pd.DataFrame(results)
+        if final_results:
+            df = pd.DataFrame(final_results)
             df.to_excel(output_excel, index=False)
             logging.info(f"结果已保存到: {output_excel}")
         else:
@@ -326,6 +553,14 @@ def main():
     parser.add_argument('--api-key', '-k',
                        help='OpenAI API密钥。也可通过环境变量 OPENAI_API_KEY 设置',
                        default=os.getenv('OPENAI_API_KEY'))
+    parser.add_argument('--batch-size', '-b',
+                       type=int,
+                       default=5,
+                       help='批处理大小，默认为5')
+    parser.add_argument('--max-tokens', '-m',
+                       type=int,
+                       default=25000,
+                       help='每批次最大令牌数，默认25000')
     
     subparsers = parser.add_subparsers(dest='command', help='可用命令')
     
@@ -336,9 +571,9 @@ def main():
                              required=True,
                              help='PDF文件路径')
     single_parser.add_argument('--output', '-o', 
-                             help='输出JSON文件径（可选）')
+                             help='输出JSON文件径（可选��')
     
-    # 批量处理命令
+    # 批量处命令
     batch_parser = subparsers.add_parser('batch', help='批量处理PDF文件')
     batch_parser.add_argument('--input', '-i',
                              dest='input_dir',
@@ -357,7 +592,11 @@ def main():
         sys.exit(1)
     
     # 创建提取器实例
-    extractor = AIInvoiceExtractor(args.api_key)
+    extractor = AIInvoiceExtractor(
+        args.api_key, 
+        batch_size=args.batch_size,
+        max_tokens_per_batch=args.max_tokens
+    )
     
     if args.command == 'single':
         # 处理单个文件
