@@ -4,7 +4,7 @@
 import argparse
 import os
 import sys
-from invoice_extractors.pdf_extractors import PyMuPDFExtractor, MarkerPDFExtractor
+from invoice_extractors.pdf_extractors import PyMuPDFExtractor, MarkerPDFExtractor, EasyOCRExtractor
 from invoice_extractors.processors import OpenAIProcessor
 from invoice_processor import InvoiceExtractorService
 import json
@@ -15,7 +15,7 @@ def main():
                        help='OpenAI API密钥。也可通过环境变量 OPENAI_API_KEY 设置',
                        default=os.getenv('OPENAI_API_KEY'))
     parser.add_argument('--extractor', '-e',
-                       choices=['pymupdf', 'marker'],
+                       choices=['pymupdf', 'marker', 'easyocr'],
                        default='pymupdf',
                        help='选择PDF提取器 (默认: pymupdf)')
     
@@ -36,7 +36,12 @@ def main():
         sys.exit(1)
     
     # 选择PDF提取器
-    pdf_extractor = PyMuPDFExtractor() if args.extractor == 'pymupdf' else MarkerPDFExtractor()
+    if args.extractor == 'easyocr':
+        pdf_extractor = EasyOCRExtractor()
+    elif args.extractor == 'marker':
+        pdf_extractor = MarkerPDFExtractor()
+    else:
+        pdf_extractor = PyMuPDFExtractor()
     
     # 创建处理器和服务
     invoice_processor = OpenAIProcessor(args.api_key)
