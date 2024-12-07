@@ -1,27 +1,23 @@
+import argparse
 import logging
+import os
 from pathlib import Path
 import json
+import sys
 import pandas as pd
 from typing import Dict, List, Optional, Union
-import openai
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import save_output, text_from_rendered
-import argparse
-import sys
-import os
-from openai import OpenAI
-import urllib.parse
 import shutil
+import urllib.parse
+from openai_helper import OpenAIHelper
 
 class AIInvoiceExtractor:
     """使用 AI 进行发票信息提取的类"""
     
     def __init__(self, openai_api_key: str):
         """初始化处理器并清理markdown目录"""
-        self.openai_api_key = openai_api_key
-        openai.api_key = openai_api_key
-        
         # 初始化 marker PDF转换器
         self.pdf_converter = PdfConverter(
             artifact_dict=create_model_dict(),
@@ -49,6 +45,9 @@ class AIInvoiceExtractor:
         
         # 清理markdown目录
         self.clean_markdown_dir()
+        
+        # 初始化OpenAIHelper
+        self.openai_helper = OpenAIHelper(api_key=openai_api_key)
 
     def clean_markdown_dir(self):
         """清空markdown目录"""
@@ -85,7 +84,7 @@ class AIInvoiceExtractor:
 
     def pdf_to_markdown(self, pdf_path: Union[str, Path]) -> Optional[str]:
         """
-        将PDF转换为Markdown文本，并保存到对应目录
+        将PDF转换为Markdown文本，并存到对应目录
         
         Args:
             pdf_path: PDF文件路径
@@ -121,67 +120,63 @@ class AIInvoiceExtractor:
             return None
 
     def extract_invoice_info(self, markdown_text: str) -> Optional[Dict]:
-        """
-        使用OpenAI API从Markdown文本中提取发票信息
-        
-        Args:
-            markdown_text: Markdown格式的文本
-            
-        Returns:
-            包含发票信息的字典，如果失败则返回None
-        """
+        """使用OpenAI API从Markdown文本中提取发票信息"""
         try:
-            # 构建 prompt，使用原始字符串避免格式化问题
-            prompt = r"""请从以下文本中提取发票信息，并以JSON格式返回。
-需要提取的字段包括：发票号码、开票日期、购买方名称、购买方纳税人识别号、
-销售名称、销售方纳税人识别号、金额、税率、税额、价税合计。
-如果某个字段未找到，将其值设为null。
+            messages = [{
+                "role": "system",
+                "content": """你是一个专业的发票信息提取助手。我会提供一个从PDF发票转换成的Markdown文本内容。
+请从中提取以下关键字段，并以JSON格式返回：
+- 发票号码
+- 开票日期
+- 购买方名称
+- 购买方纳税人识别号
+- 销售方名称
+- 销售方纳税人识别号
+- 金额
+- 税率
+- 税额
+- 价税合计
 
-文本内容：
-{}
-
-请以下面的格式返回（仅返回JSON，不要其他说明）：
-{{
-    "发票号码": null,
-    "开票日期": null,
-    "购买方名称": null,
-    "购买方纳税人识别号": null,
-    "销售方名称": null,
-    "销售方纳税人识别号": null,
-    "金额": null,
-    "税率": null,
-    "税额": null,
-    "价税合计": null
-}}""".format(markdown_text)
-
-            # 调用OpenAI API
-            client = OpenAI(api_key=self.openai_api_key)
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
+注意事项：
+1. 金额相关字段请保持数值格式，不要包含货币符号
+2. 日期请统一格式为YYYY-MM-DD
+3. 如果某字段未找到，对应值请返回null
+4. 请确保返回的是合法的JSON格式"""
+            }, {
+                "role": "user",
+                "content": f"请从以下发票文本中提取信息：\n{markdown_text}"
+            }]
+            
+            # 打印发送给API的消息
+            logging.info("发送给OpenAI的消息:")
+            logging.info(json.dumps(messages, ensure_ascii=False, indent=2))
+            
+            # 使用OpenAIHelper发送请求
+            response = self.openai_helper.make_request(
+                messages=messages,
+                response_format={"type": "json_object"}
             )
             
-            # 获取原始返回内容
-            raw_content = response.choices[0].message.content
-            logging.info(f"OpenAI返回内容:\n{raw_content}")  # 添加这行来查看返回内容
-            
-            try:
-                result = json.loads(raw_content)
-                return result
-            except json.JSONDecodeError as e:
-                logging.error("OpenAI返回内容解析失败")
-                logging.error(f"原始返回内容:\n{raw_content}")
-                logging.error(f"JSON解析错误: {str(e)}")
+            # 获取响应内容
+            if hasattr(response, 'choices') and len(response.choices) > 0:
+                content = response.choices[0].message.content
+                # 打印API的响应内容
+                logging.info("OpenAI的响应内容:")
+                logging.info(content)
+                
+                try:
+                    # 解析JSON响应
+                    result = json.loads(content)
+                    return result
+                except json.JSONDecodeError as e:
+                    logging.error(f"JSON解析失败: {str(e)}")
+                    return None
+            else:
+                logging.error("API响应格式不正确")
                 return None
             
         except Exception as e:
             logging.error(f"发票信息提取失败: {str(e)}")
-            if 'response' in locals():
-                try:
-                    logging.error(f"OpenAI原始返回内容:\n{response.choices[0].message.content}")
-                except:
-                    pass
             return None
 
     def process_pdfs(self, 
