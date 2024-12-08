@@ -18,3 +18,7 @@ argparse>=1.4.0  # 命令行参数解析
 python-logging>=0.4.9  # 日志处理
 typing>=3.7.4  # 类型注解支持
 pathlib>=1.0.1  # 路径处理 
+
+# Streamlit
+streamlit
+Pillow
