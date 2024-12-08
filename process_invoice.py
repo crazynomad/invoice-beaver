@@ -3,7 +3,7 @@
 import pandas as pd
 import logging
 from pathlib import Path
-from invoice_extractor import InvoiceExtractor
+from legacy.invoice_extractor import InvoiceExtractor
 from natsort import natsorted
 
 def setup_logging():
