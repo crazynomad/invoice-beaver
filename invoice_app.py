@@ -12,6 +12,7 @@ from invoice_extractors.pdf_extractors import PyMuPDFExtractor, MarkerPDFExtract
 from invoice_extractors.processors import OpenAIProcessor
 from invoice_processor import InvoiceExtractorService
 import pandas as pd
+import re
 
 # 定义可用的提取策略
 EXTRACTION_STRATEGIES = {
@@ -79,19 +80,31 @@ def process_pdf(pdf_file: bytes, api_key: str, strategy: str, log_container) -> 
             timestamp = datetime.now().strftime("%H:%M:%S")
             log_container.write(f"[{timestamp}] 清理临时文件失败: {str(e)}\n")
 
-def process_multiple_pdfs(pdf_files: List[bytes], api_key: str, strategy: str, progress_bar, log_container):
+def sanitize_filename(filename: str) -> str:
+    """安全处理文件名，移除特殊字符并限制长度"""
+    # 移除文件扩展名
+    filename = os.path.splitext(filename)[0]
+    # 只保留字母、数字、下划线、连字符和点
+    filename = re.sub(r'[^\w\-\.]', '_', filename)
+    # 限制文件名长度为100个字符
+    return filename[:100]
+
+def process_multiple_pdfs(pdf_files: List[bytes], pdf_names: List[str], api_key: str, strategy: str, batch_id: str, progress_bar, log_container):
     """处理多个PDF文件"""
     # 创建临时目录存储上传的PDF文件
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir = Path(temp_dir)
         
         # 保存所有上传的PDF文件到临时目录
-        for i, pdf_file in enumerate(pdf_files):
-            temp_pdf_path = temp_dir / f"invoice_{i}.pdf"
+        for i, (pdf_file, original_name) in enumerate(zip(pdf_files, pdf_names)):
+            # 安全处理文件名
+            safe_name = sanitize_filename(original_name)
+            # 确保文件名唯一
+            temp_pdf_path = temp_dir / f"{safe_name}_{i}.pdf"
             with open(temp_pdf_path, "wb") as f:
                 f.write(pdf_file)
-            progress_bar.progress((i + 1) / (len(pdf_files) * 2))  # 第一阶段：保存文件
-        
+            progress_bar.progress((i + 1) / (len(pdf_files) * 2))
+
         try:
             # 选择PDF提取器
             if strategy == 'easyocr':
@@ -101,12 +114,12 @@ def process_multiple_pdfs(pdf_files: List[bytes], api_key: str, strategy: str, p
             else:
                 pdf_extractor = PyMuPDFExtractor()
 
-            # 创建��理器和服务
+            # 创建处理器和服务
             invoice_processor = OpenAIProcessor(api_key)
             service = InvoiceExtractorService(pdf_extractor, invoice_processor)
             
-            # 创建临时Excel文件
-            temp_excel = temp_dir / "results.xlsx"
+            # 修改Excel文件名以包含批次ID
+            temp_excel = temp_dir / f"results_{batch_id}.xlsx"
             
             # 处理所有PDF文件
             timestamp = datetime.now().strftime("%H:%M:%S")
@@ -128,7 +141,7 @@ def process_multiple_pdfs(pdf_files: List[bytes], api_key: str, strategy: str, p
                     st.download_button(
                         label="下载Excel结果",
                         data=excel_data,
-                        file_name="发票信息_批量.xlsx",
+                        file_name=f"发票信息_批量_{batch_id}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 
@@ -163,11 +176,11 @@ def main():
         api_key = st.text_input(
             "OpenAI API Key",
             type="password",
-            help="输入你的OpenAI API密钥，如果不输入将使用环境变量中的API密钥",
+            help="输入你的OpenAI API密钥，如果不输入将使用���境变量中的API密钥",
             value=default_api_key
         )
         
-        # 如果用户没有输入，尝试��用环境变量中的 API key
+        # 如果用户没有输入，尝试用环境变量中的 API key
         if not api_key and default_api_key:
             api_key = default_api_key
             st.info("使用环境变量中的 OpenAI API 密钥")
@@ -217,7 +230,7 @@ def main():
             )
             
             preview_image = get_page_image(pdf_content, page_number)
-            st.image(preview_image, caption="PDF预览", use_column_width=True)
+            st.image(preview_image, caption="PDF预览", use_container_width=True)
             
         except Exception as e:
             st.error(f"预览生成失败: {str(e)}")
@@ -231,17 +244,24 @@ def main():
         if st.button("开始处理"):
             with st.spinner("正在处理..."):
                 try:
-                    # 获取所有PDF文件内容
+                    # 生成批次ID
+                    batch_id = datetime.now().strftime("%H%M")
+                    
+                    # 获取所有PDF文件内容和文件名
                     pdf_contents = []
+                    pdf_names = []
                     for uploaded_file in uploaded_files:
                         uploaded_file.seek(0)
                         pdf_contents.append(uploaded_file.read())
+                        pdf_names.append(uploaded_file.name)
                     
                     # 处理所有文件
                     results = process_multiple_pdfs(
                         pdf_contents,
+                        pdf_names,
                         api_key,
                         EXTRACTION_STRATEGIES[strategy],
+                        batch_id,
                         progress_bar,
                         log_container
                     )
@@ -249,6 +269,7 @@ def main():
                     if results:
                         # 保存所有结果
                         all_results = {
+                            "batch_id": batch_id,
                             "extraction_strategy": strategy,
                             "timestamp": datetime.now().isoformat(),
                             "results": results
@@ -259,7 +280,7 @@ def main():
                         st.download_button(
                             label="下载所有结果",
                             data=json_str.encode('utf-8'),
-                            file_name="发票信息_批量.json",
+                            file_name=f"发票信息_批量_{batch_id}.json",
                             mime="application/json"
                         )
                     else:
