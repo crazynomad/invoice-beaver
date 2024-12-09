@@ -41,7 +41,12 @@ class InvoiceExtractorService:
         if not content:
             return None
             
-        result = self.invoice_processor.process(content)
+        formatted_content = [{
+            'filename': pdf_path.name,
+            'content': content
+        }]        
+        result = self.invoice_processor.process(formatted_content)
+        
         if result:
             result["文件名"] = pdf_path.name
             
@@ -50,13 +55,31 @@ class InvoiceExtractorService:
     def process_pdfs(self, input_dir: Union[str, Path], output_excel: Union[str, Path]) -> None:
         """批量处理PDF文件"""
         input_dir = Path(input_dir)
-        results = []
+        pdf_contents = []
         
+        # 首先收集所有PDF文件的内容
         for pdf_file in input_dir.glob("*.pdf"):
-            result = self.process_single_pdf(pdf_file)
-            if result:
-                results.append(result)
+            normalized_path = self.normalize_filename(pdf_file)
+            content = self.pdf_extractor.extract(normalized_path)
+            if content:
+                pdf_contents.append({
+                    'filename': normalized_path.name,
+                    'content': content
+                })
         
+        if not pdf_contents:
+            logging.warning("没有找到可处理的PDF文件")
+            return
+        
+        # 批量处理所有文件
+        results = self.invoice_processor.process(pdf_contents)
+        
+        # 添加文件名到结果中
+        for result, content in zip(results, pdf_contents):
+            if result:
+                result["文件名"] = content["filename"]
+        
+        # 保存结果
         if results:
             df = pd.DataFrame(results)
             df.to_excel(output_excel, index=False)

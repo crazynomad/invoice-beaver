@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List
 from pathlib import Path
 
 class PDFExtractor(ABC):
@@ -14,6 +14,14 @@ class InvoiceProcessor(ABC):
     """发票信息处理器的基类"""
     
     @abstractmethod
-    def process(self, content: str) -> Optional[Dict]:
-        """处理提取的内容并返回发票信息"""
+    def process(self, contents: List[Dict[str, str]]) -> List[Dict[str, Union[str, Dict]]]:
+        """
+        处理提取的内容并返回发票信息
+        Args:
+            contents: 包含文件名和内容的字典列表
+                     [{'filename': 'xxx.pdf', 'content': '发票内容'}, ...]
+        Returns:
+            包含文件名和解析后发票信息的字典列表
+            [{'filename': 'xxx.pdf', 'invoice': {发票详细信息字典}}, ...]
+        """
         pass 

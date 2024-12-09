@@ -8,6 +8,7 @@ from invoice_extractors.pdf_extractors import PyMuPDFExtractor, MarkerPDFExtract
 from invoice_extractors.processors import OpenAIProcessor
 from invoice_processor import InvoiceExtractorService
 import json
+from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description='AI发票信息提取工具')
@@ -44,18 +45,26 @@ def main():
         pdf_extractor = PyMuPDFExtractor()
     
     # 创建处理器和服务
-    invoice_processor = OpenAIProcessor(args.api_key)
+    invoice_processor = OpenAIProcessor(args.api_key, debug=True)
     service = InvoiceExtractorService(pdf_extractor, invoice_processor)
     
     if args.command == 'single':
+        # 获取PDF文件名
+        pdf_path = Path(args.pdf)
+        filename = pdf_path.name
+        
+        # 处理单个PDF
         result = service.process_single_pdf(args.pdf)
-        if result:
+        if result and len(result) > 0:
+            # 获取第一个结果（因为是单文件处理）
+            invoice_data = result[0]
+            
             if args.output:
                 with open(args.output, 'w', encoding='utf-8') as f:
-                    json.dump(result, f, ensure_ascii=False, indent=2)
+                    json.dump(invoice_data, f, ensure_ascii=False, indent=2)
                 print(f"结果已保存到: {args.output}")
             else:
-                print(json.dumps(result, ensure_ascii=False, indent=2))
+                print(json.dumps(invoice_data, ensure_ascii=False, indent=2))
         else:
             print("处理失败")
             sys.exit(1)
