@@ -11,6 +11,7 @@ from datetime import datetime
 from invoice_extractors.pdf_extractors import PyMuPDFExtractor, MarkerPDFExtractor, EasyOCRExtractor
 from invoice_extractors.processors import OpenAIProcessor
 from invoice_processor import InvoiceExtractorService
+import pandas as pd
 
 # 定义可用的提取策略
 EXTRACTION_STRATEGIES = {
@@ -80,16 +81,67 @@ def process_pdf(pdf_file: bytes, api_key: str, strategy: str, log_container) -> 
 
 def process_multiple_pdfs(pdf_files: List[bytes], api_key: str, strategy: str, progress_bar, log_container):
     """处理多个PDF文件"""
-    results = []
-    for i, pdf_file in enumerate(pdf_files):
-        progress_bar.progress((i + 1) / len(pdf_files))
+    # 创建临时目录存储上传的PDF文件
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir = Path(temp_dir)
+        
+        # 保存所有上传的PDF文件到临时目录
+        for i, pdf_file in enumerate(pdf_files):
+            temp_pdf_path = temp_dir / f"invoice_{i}.pdf"
+            with open(temp_pdf_path, "wb") as f:
+                f.write(pdf_file)
+            progress_bar.progress((i + 1) / (len(pdf_files) * 2))  # 第一阶段：保存文件
+        
         try:
-            result = process_pdf(pdf_file, api_key, strategy, log_container)
-            if result:
-                results.append(result)
+            # 选择PDF提取器
+            if strategy == 'easyocr':
+                pdf_extractor = EasyOCRExtractor()
+            elif strategy == 'marker':
+                pdf_extractor = MarkerPDFExtractor()
+            else:
+                pdf_extractor = PyMuPDFExtractor()
+
+            # 创建��理器和服务
+            invoice_processor = OpenAIProcessor(api_key)
+            service = InvoiceExtractorService(pdf_extractor, invoice_processor)
+            
+            # 创建临时Excel文件
+            temp_excel = temp_dir / "results.xlsx"
+            
+            # 处理所有PDF文件
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            log_container.write(f"[{timestamp}] 开始批量处理PDF文件...\n")
+            
+            service.process_pdfs(temp_dir, temp_excel)
+            
+            # 读取Excel结果
+            if temp_excel.exists():
+                df = pd.read_excel(temp_excel)
+                results = df.to_dict('records')
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                log_container.write(f"[{timestamp}] 批量处理完成，成功处理 {len(results)} 个文件\n")
+                progress_bar.progress(1.0)  # 完成
+                
+                # 添加Excel下载按钮
+                with open(temp_excel, 'rb') as f:
+                    excel_data = f.read()
+                    st.download_button(
+                        label="下载Excel结果",
+                        data=excel_data,
+                        file_name="发票信息_批量.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                
+                return results
+            else:
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                log_container.write(f"[{timestamp}] 处理完成，但未生成结果\n")
+                return []
+                
         except Exception as e:
-            log_container.error(f"处理文件 {i+1} 失败: {str(e)}")
-    return results
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            log_container.write(f"[{timestamp}] 批量处理失败: {str(e)}\n")
+            raise
 
 def main():
     st.set_page_config(layout="wide", page_title="发票信息提取工具")
@@ -115,7 +167,7 @@ def main():
             value=default_api_key
         )
         
-        # 如果用户没有输入，尝试使用环境变量中的 API key
+        # 如果用户没有输入，尝试��用环境变量中的 API key
         if not api_key and default_api_key:
             api_key = default_api_key
             st.info("使用环境变量中的 OpenAI API 密钥")
@@ -211,7 +263,7 @@ def main():
                             mime="application/json"
                         )
                     else:
-                        st.error("没有��功提取的结果")
+                        st.error("没有成功提取的结果")
                         
                 except Exception as e:
                     st.error(f"处理失败: {str(e)}")
