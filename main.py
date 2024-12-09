@@ -51,20 +51,16 @@ def main():
     if args.command == 'single':
         # 获取PDF文件名
         pdf_path = Path(args.pdf)
-        filename = pdf_path.name
         
         # 处理单个PDF
         result = service.process_single_pdf(args.pdf)
-        if result and len(result) > 0:
-            # 获取第一个结果（因为是单文件处理）
-            invoice_data = result[0]
-            
+        if result:
             if args.output:
                 with open(args.output, 'w', encoding='utf-8') as f:
-                    json.dump(invoice_data, f, ensure_ascii=False, indent=2)
+                    json.dump(result, f, ensure_ascii=False, indent=2)
                 print(f"结果已保存到: {args.output}")
             else:
-                print(json.dumps(invoice_data, ensure_ascii=False, indent=2))
+                print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             print("处理失败")
             sys.exit(1)

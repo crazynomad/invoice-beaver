@@ -45,12 +45,10 @@ class InvoiceExtractorService:
             'filename': pdf_path.name,
             'content': content
         }]        
-        result = self.invoice_processor.process(formatted_content)
+        results = self.invoice_processor.process(formatted_content)
         
-        if result:
-            result["文件名"] = pdf_path.name
-            
-        return result
+        # 返回第一个结果，因为只处理了一个文件
+        return results[0] if results else None
 
     def process_pdfs(self, input_dir: Union[str, Path], output_excel: Union[str, Path]) -> None:
         """批量处理PDF文件"""

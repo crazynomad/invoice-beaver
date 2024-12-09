@@ -61,11 +61,11 @@ def process_pdf(pdf_file: bytes, api_key: str, strategy: str, log_container) -> 
         if result:
             timestamp = datetime.now().strftime("%H:%M:%S")
             log_container.write(f"[{timestamp}] PDF处理成功完成\n")
+            return result
         else:
             timestamp = datetime.now().strftime("%H:%M:%S")
             log_container.write(f"[{timestamp}] PDF处理完成，但未返回结果\n")
-        
-        return result
+            return None
 
     except Exception as e:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -211,7 +211,7 @@ def main():
                             mime="application/json"
                         )
                     else:
-                        st.error("没有成功提取的结果")
+                        st.error("没有��功提取的结果")
                         
                 except Exception as e:
                     st.error(f"处理失败: {str(e)}")
