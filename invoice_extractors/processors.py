@@ -45,7 +45,7 @@ class OpenAIProcessor(InvoiceProcessor):
 
     def _build_user_message(self, contents: List[Dict[str, str]]) -> str:
         """构建用户消息内容"""
-        files_json = [{"文��名": item['filename'], "内容": item['content']} for item in contents]
+        files_json = [{"文件名": item['filename'], "内容": item['content']} for item in contents]
         return """请解析以下发票信息，特别注意：
 1. 对于普通发票：
    - 提取"价税合计"的大写金额（例如"叁佰玖拾伍圆整"、"玖拾叁圆零壹分"等）并填入"价税合计大写"字段
@@ -68,6 +68,13 @@ class OpenAIProcessor(InvoiceProcessor):
         
         # 移除"整"、"正"等后缀
         chinese_amount = chinese_amount.rstrip("整正")
+        
+        # 处理货币单位
+        chinese_amount = (chinese_amount
+            .replace('圆', '点')
+            .replace('元', '点')
+            .replace('角', '')
+            .replace('分', ''))
         
         try:
             # 使用 cn2an 库进行转换
@@ -127,7 +134,7 @@ class OpenAIProcessor(InvoiceProcessor):
                 
                 # 如果不是高铁票，检查价税合计
                 if invoice_dict['价税合计大写'] != "高铁票":
-                    # 将大写金额转换为数字
+                    # 将大写金额转换为��字
                     chinese_amount = self._convert_chinese_amount_to_number(invoice_dict['价税合计大写'])
                     if chinese_amount is not None:
                         # 将价税合计转换为浮点数进行比较
@@ -145,7 +152,7 @@ class OpenAIProcessor(InvoiceProcessor):
                         except ValueError:
                             # 如果价税合计不是有效数字，直接使用从大写转换来的金额
                             logging.warning(
-                                f"发票金额格式无效 - 文件名: {invoice_dict['文件名']}\n"
+                                f"发票金额格式无效 - 文件名: {invoice_dict['文件��']}\n"
                                 f"大写金额: {invoice_dict['价税合计大写']}\n"
                                 f"转换后数值: {chinese_amount:.2f}\n"
                                 f"原始无效数值: {invoice_dict['价税合计']}"
