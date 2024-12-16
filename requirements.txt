@@ -21,4 +21,4 @@ pathlib>=1.0.1  # 路径处理
 
 # Streamlit
 streamlit
-Pillow
+Pillowcn2an==2.3.3

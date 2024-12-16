@@ -53,6 +53,15 @@ bash
 pip install -r requirements.txt
 
 ## 使用方法
+### WebUI 使用方法
+
+使用 Streamlit 启动 Web 界面：
+
+```bash
+streamlit run invoice_app.py
+```
+
+### 命令行使用方法
 
 1. 准备工作
    - 创建 `pdf` 目录并放入待处理的发票 PDF 文件
